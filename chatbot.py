@@ -2,7 +2,9 @@ import fitz  # PyMuPDF para leitura de PDFs
 from sentence_transformers import SentenceTransformer
 import chromadb
 import requests
-import gradio as gr
+import os
+from groq import Groq
+import json
 
 # Carregar o modelo de embeddings
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -39,30 +41,43 @@ def process_and_store_book_data(pdf_path, title):
 
 # Processar todos os livros em PDF sobre metal
 metal_pdf_files = {
-    "Choosing Death": "/livros/Choosing Death.pdf",
-    "History of Heavy Metal": "/livros/History of Heavy Metal.pdf",
-    "Louder Than Hell": "/livros/Louder Than Hell.pdf"
+    "Choosing Death": "livros/ChoosingDeath.pdf",
+    "History of Heavy Metal": "livros/HistoryofHeavyMetal.pdf",
+    "Louder Than Hell": "livros/LouderThanHell.pdf"
 }
 
 for title, path in metal_pdf_files.items():
     process_and_store_book_data(path, title)
     print(f"Processado: {title}")
 
-def retrieve_documents_from_metal_books(query, top_k=3):
+def retrieve_documents_from_metal_books(query, top_k=1): 
     query_embedding = embedding_model.encode(query).tolist()
     results = metal_books_collection.query(query_embeddings=[query_embedding], n_results=top_k)
 
     # Extrair apenas os documentos dos resultados
-    docs = [doc for sublist in results['documents'] for doc in sublist]  # Garantindo que todos os documentos sejam incluídos
+    docs = [doc for sublist in results['documents'] for doc in sublist]
     return docs
 
-# Função para gerar resposta final com LLAMA 3.1
+working_dir = os.path.dirname(os.path.abspath(__file__))
+config_data = json.load(open(f"{working_dir}/config.json"))
+
+GROQ_API_KEY = config_data["GROQ_API_KEY"]
+
+# Save the API key to environment variable
+os.environ["GROQ_API_KEY"] = GROQ_API_KEY
+
+client = Groq()
+
 def generate_response_with_context(query):
     # Recuperar documentos relevantes
-    metal_docs = retrieve_documents_from_metal_books(query)
+    metal_docs = retrieve_documents_from_metal_books(query, top_k=1)
 
-    # Juntar o contexto em um único bloco de texto
-    context = "\n\n".join(metal_docs)
+    # Juntar o contexto em um único bloco de texto, talvez resumindo ou pegando partes específicas
+    context = " ".join(metal_docs)  # Pode-se usar apenas o primeiro documento ou um resumo
+
+    # Limitar o tamanho do contexto (por exemplo, limitar a 512 tokens)
+    context_tokens = context.split()[:512]  # Limitar para 512 tokens
+    context = " ".join(context_tokens)
 
     # Exibir o contexto para diagnóstico
     print("Contexto combinado:", context)
@@ -73,34 +88,13 @@ def generate_response_with_context(query):
         {"role": "user", "content": f"Contexto:\n{context}\n\nPergunta: {query}"}
     ]
 
-    # Enviar para LLAMA 3.1 via API (LM Studio ou outro endpoint)
-    response = requests.post(
-        "http://localhost:8000/v1/chat/completions",
-        json={"messages": messages, "max_tokens": 300}
+    # Criar uma solicitação de conclusão de chat usando o modelo Groq
+    chat_completion = client.chat.completions.create(
+        messages=messages,
+        model="llama3-70b-8192",
     )
 
-    # Checar se a resposta foi recebida corretamente
-    if response.status_code == 200:
-        generated_text = response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
-        print("Resposta gerada:", generated_text)  # Diagnóstico da resposta gerada
-        return generated_text
-    else:
-        print("Erro na geração da resposta:", response.status_code, response.text)
-        return "Erro na geração da resposta."
+    # Recuperar e retornar o conteúdo gerado pela resposta
+    return chat_completion.choices[0].message.content
 
-# Interface Gradio para consulta
-def process_query(query):
-    response = generate_response_with_context(query)
-    return response
 
-# Configuração da Interface Gradio
-interface = gr.Interface(
-    fn=process_query,
-    inputs="text",
-    outputs="text",
-    title="Consultor de Música Metal",
-    description="Consulte sobre a história do metal, subgêneros e bandas."
-)
-
-# Executar a interface
-interface.launch()
